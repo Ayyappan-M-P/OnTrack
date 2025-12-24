@@ -140,13 +140,69 @@ const optimizeRouteLocally = (stops, currentLat, currentLng, roadIssues, mode) =
     });
     optimizedStops = nearestNeighborSort(sortedByRisk, currentPos);
   } else {
-    const orderedHigh = nearestNeighborSort([...highPriority], currentPos);
-    optimizedStops = [...orderedHigh];
-    if (orderedHigh.length > 0) {
-      currentPos = orderedHigh[orderedHigh.length - 1];
+    // Balanced: alternate between high-priority and normal stops, but choose next by a score that
+    // combines distance, turn-angle penalty (favor smoother routes) and issue-risk penalty.
+    const high = [...highPriority];
+    const normal = [...normalPriority];
+    optimizedStops = [];
+    let toggle = high.length >= normal.length; // start with larger group
+    let cur = { ...currentPos };
+    // previous bearing (degrees) used for turn penalty; null for first pick
+    let prevBearing = null;
+
+    const bearingBetween = (lat1, lon1, lat2, lon2) => {
+      const toRad = (d) => (d * Math.PI) / 180;
+      const toDeg = (r) => (r * 180) / Math.PI;
+      const dLon = toRad(lon2 - lon1);
+      const y = Math.sin(dLon) * Math.cos(toRad(lat2));
+      const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+      return (toDeg(Math.atan2(y, x)) + 360) % 360;
+    };
+
+    const angleDiff = (a, b) => {
+      let d = Math.abs(a - b) % 360;
+      if (d > 180) d = 360 - d;
+      return d; // 0..180
+    };
+
+    const TURN_WEIGHT = 0.45; // how much turning penalizes (0..1)
+    const RISK_KM_EQUIV = 0.35; // convert risk score to km-equivalent penalty
+
+    while (high.length || normal.length) {
+      const pool = toggle ? high : normal;
+      if (pool.length === 0) {
+        toggle = !toggle;
+        continue;
+      }
+
+      // choose by minimal score = distance_km + turnPenalty + riskPenalty
+      let bestIdx = 0;
+      let bestScore = Infinity;
+      for (let i = 0; i < pool.length; i++) {
+        const cand = pool[i];
+        const dist = haversineDistance(cur.lat, cur.lng, cand.lat, cand.lng); // km
+        let turnPenalty = 0;
+        if (prevBearing !== null) {
+          const candBearing = bearingBetween(cur.lat, cur.lng, cand.lat, cand.lng);
+          const ang = angleDiff(prevBearing, candBearing); // 0..180
+          turnPenalty = TURN_WEIGHT * (ang / 180) * dist; // scale with distance
+        }
+        const risk = calculateIssueRisk(cand, roadIssues); // small integer
+        const riskPenalty = (risk || 0) * RISK_KM_EQUIV;
+        const score = dist + turnPenalty + riskPenalty;
+        if (score < bestScore) {
+          bestScore = score;
+          bestIdx = i;
+        }
+      }
+
+      const [picked] = pool.splice(bestIdx, 1);
+      optimizedStops.push(picked);
+      // update prevBearing using movement from cur -> picked
+      prevBearing = bearingBetween(cur.lat, cur.lng, picked.lat, picked.lng);
+      cur = picked;
+      toggle = !toggle;
     }
-    const orderedNormal = nearestNeighborSort([...normalPriority], currentPos);
-    optimizedStops = [...optimizedStops, ...orderedNormal];
   }
 
   return optimizedStops;
@@ -452,23 +508,71 @@ export default function DriverRoutePage() {
     abortRef.current = controller;
 
     try {
-      const { coords, duration, distance, instructions: routeInstructions } = 
-        await fetchRouteWithSteps(orderedStops, roadIssues, mode, controller.signal, driverLocation);
+      const result = await fetchRouteWithSteps(orderedStops, roadIssues, mode, controller.signal, driverLocation);
 
-      setRouteCoords(coords);
-      setInstructions(routeInstructions);
-      setStats({
-        km: (distance / 1000).toFixed(1),
-        min: Math.round(duration / 60),
-      });
+      if (result && Array.isArray(result.coords) && result.coords.length > 1) {
+        const { coords, duration, distance, instructions: routeInstructions } = result;
+        setRouteCoords(coords);
+        setInstructions(routeInstructions);
+        setStats({
+          km: (distance / 1000).toFixed(1),
+          min: Math.round(duration / 60),
+        });
 
-      // Calculate ETAs
-      const basePerStop = Math.round(duration / orderedStops.length / 60);
-      setEtas(
-        orderedStops.map((s, i) =>
-          applyTrafficDrift(basePerStop * (i + 1), s, roadIssues)
-        )
-      );
+        // Calculate ETAs
+        const basePerStop = Math.max(1, Math.round(duration / Math.max(1, orderedStops.length) / 60));
+        setEtas(
+          orderedStops.map((s, i) =>
+            applyTrafficDrift(basePerStop * (i + 1), s, roadIssues)
+          )
+        );
+      } else {
+        // Fallback: build simple straight-line polyline following ordered stops (including driver position)
+        const pts = [];
+        if (driverLocation) pts.push([driverLocation.lat, driverLocation.lng]);
+        orderedStops.forEach(s => pts.push([s.lat, s.lng]));
+
+        // Interpolate between points to make the line look continuous
+        const interp = [];
+        for (let i = 0; i < pts.length - 1; i++) {
+          const [lat1, lng1] = pts[i];
+          const [lat2, lng2] = pts[i + 1];
+          interp.push([lat1, lng1]);
+          const steps = 8; // smoothness
+          for (let k = 1; k < steps; k++) {
+            const t = k / steps;
+            interp.push([lat1 + (lat2 - lat1) * t, lng1 + (lng2 - lng1) * t]);
+          }
+        }
+        interp.push(pts[pts.length - 1]);
+
+        // Simple distance/duration estimate
+        let totalKm = 0;
+        for (let i = 0; i < pts.length - 1; i++) {
+          totalKm += haversineDistance(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
+        }
+        const avgSpeedKph = 30; // conservative average speed
+        const estDurationSec = (totalKm / avgSpeedKph) * 3600;
+
+        // Simple instructions per stop
+        const simpleInstructions = orderedStops.map((s, idx) => ({
+          id: `local-${idx}`,
+          instruction: `Proceed to stop ${idx + 1}`,
+          type: "continue",
+          modifier: null,
+          distance: 0,
+          duration: 0,
+          location: [s.lat, s.lng],
+          roadName: "",
+        }));
+
+        setRouteCoords(interp);
+        setInstructions(simpleInstructions);
+        setStats({ km: totalKm.toFixed(1), min: Math.round(estDurationSec / 60) });
+
+        const basePerStop = Math.max(1, Math.round(estDurationSec / Math.max(1, orderedStops.length) / 60));
+        setEtas(orderedStops.map((s, i) => applyTrafficDrift(basePerStop * (i + 1), s, roadIssues)));
+      }
     } catch (err) {
       if (err.name !== "AbortError") {
         console.error("Route calculation failed:", err);
