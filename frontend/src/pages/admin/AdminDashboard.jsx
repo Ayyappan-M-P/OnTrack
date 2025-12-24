@@ -7,7 +7,7 @@ import * as signalR from "@microsoft/signalr";
 import OrderDetailsModal from "./OrderDetailsModal";
 import DriverDetailsModal from "./DriverDetailsModal";
 
-import Link from "react-router-dom"; // Assuming standard imports or just append
+import { Link, useNavigate } from "react-router-dom";
 import { HUB_BASE_URL } from "../../config";
 import { OrdersBarChart } from "../../components/charts/OrdersBarChart";
 import { OrdersPieChart } from "../../components/charts/OrdersPieChart";
@@ -40,6 +40,7 @@ const normalizeStatus = (status) => {
 /*  COMPONENT  */
 export default function AdminDashboard() {
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
 
   const [drivers, setDrivers] = useState([]);
   const [selectedDrivers, setSelectedDrivers] = useState({});
@@ -164,9 +165,7 @@ export default function AdminDashboard() {
     fetchDashboard();
   };
 
-  const navigateToASR = () => {
-    window.location.href = "/admin/asr";
-  };
+  const navigateToASR = () => navigate("/admin/asr");
 
   /* ===================== JSX ===================== */
   return (
