@@ -542,146 +542,146 @@
 //   }, [rawStops]);
 
 //     const calculateRoute = async (orderedStops) => {
-  if (!driverLocation) return;
+  // if (!driverLocation) return;
 
-  abortRef.current?.abort?.();
-  const controller = new AbortController();
-  abortRef.current = controller;
+  // abortRef.current?.abort?.();
+  // const controller = new AbortController();
+  // abortRef.current = controller;
 
-  try {
-    const result = await fetchRouteWithSteps(
-      orderedStops,
-      roadIssues,
-      mode,
-      controller.signal,
-      driverLocation
-    );
+  // try {
+  //   const result = await fetchRouteWithSteps(
+  //     orderedStops,
+  //     roadIssues,
+  //     mode,
+  //     controller.signal,
+  //     driverLocation
+  //   );
 
-    if (result && Array.isArray(result.coords) && result.coords.length > 1) {
-      const {
-        coords,
-        duration,
-        distance,
-        instructions: routeInstructions,
-      } = result;
+  //   if (result && Array.isArray(result.coords) && result.coords.length > 1) {
+  //     const {
+  //       coords,
+  //       duration,
+  //       distance,
+  //       instructions: routeInstructions,
+  //     } = result;
 
-      setRouteCoords(coords);
-      setInstructions(routeInstructions);
+  //     setRouteCoords(coords);
+  //     setInstructions(routeInstructions);
 
-      setStats({
-        km: (distance / 1000).toFixed(1),
-        min: Math.round(duration / 60),
-      });
+  //     setStats({
+  //       km: (distance / 1000).toFixed(1),
+  //       min: Math.round(duration / 60),
+  //     });
 
-      /* =====================================================
-         ✅ NEW ACCURATE ETA CALCULATION (ROUTE-BASED)
-         ===================================================== */
+  //     /* =====================================================
+  //        ✅ NEW ACCURATE ETA CALCULATION (ROUTE-BASED)
+  //        ===================================================== */
 
-      // 1️⃣ Collect all step durations (seconds)
-      const stepDurations = routeInstructions.map(s => s.duration || 0);
+  //     // 1️⃣ Collect all step durations (seconds)
+  //     const stepDurations = routeInstructions.map(s => s.duration || 0);
 
-      // 2️⃣ Total route time (seconds)
-      const totalRouteTime = stepDurations.reduce((a, b) => a + b, 0);
+  //     // 2️⃣ Total route time (seconds)
+  //     const totalRouteTime = stepDurations.reduce((a, b) => a + b, 0);
 
-      // 3️⃣ Distribute ETAs along the route length
-      let accumulatedTime = 0;
-      const etasCalculated = [];
+  //     // 3️⃣ Distribute ETAs along the route length
+  //     let accumulatedTime = 0;
+  //     const etasCalculated = [];
 
-      for (let i = 0; i < orderedStops.length; i++) {
-        // proportion of route covered till this stop
-        const ratio = (i + 1) / orderedStops.length;
+  //     for (let i = 0; i < orderedStops.length; i++) {
+  //       // proportion of route covered till this stop
+  //       const ratio = (i + 1) / orderedStops.length;
 
-        const targetTime = totalRouteTime * ratio;
+  //       const targetTime = totalRouteTime * ratio;
 
-        while (accumulatedTime < targetTime && stepDurations.length) {
-          accumulatedTime += stepDurations.shift();
-        }
+  //       while (accumulatedTime < targetTime && stepDurations.length) {
+  //         accumulatedTime += stepDurations.shift();
+  //       }
 
-        // Convert to minutes + traffic drift
-        const etaMinutes = Math.round(accumulatedTime / 60);
+  //       // Convert to minutes + traffic drift
+  //       const etaMinutes = Math.round(accumulatedTime / 60);
 
-        etasCalculated.push(
-          applyTrafficDrift(etaMinutes, orderedStops[i], roadIssues)
-        );
-      }
+  //       etasCalculated.push(
+  //         applyTrafficDrift(etaMinutes, orderedStops[i], roadIssues)
+  //       );
+  //     }
 
-      setEtas(etasCalculated);
+  //     setEtas(etasCalculated);
 
-    } else {
-      /* =====================================================
-         🔁 FALLBACK (NO OSRM DATA)
-         ===================================================== */
+  //   } else {
+  //     /* =====================================================
+  //        🔁 FALLBACK (NO OSRM DATA)
+  //        ===================================================== */
 
-      const pts = [];
-      if (driverLocation) pts.push([driverLocation.lat, driverLocation.lng]);
-      orderedStops.forEach(s => pts.push([s.lat, s.lng]));
+  //     const pts = [];
+  //     if (driverLocation) pts.push([driverLocation.lat, driverLocation.lng]);
+  //     orderedStops.forEach(s => pts.push([s.lat, s.lng]));
 
-      const interp = [];
-      for (let i = 0; i < pts.length - 1; i++) {
-        const [lat1, lng1] = pts[i];
-        const [lat2, lng2] = pts[i + 1];
-        interp.push([lat1, lng1]);
-        const steps = 8;
-        for (let k = 1; k < steps; k++) {
-          const t = k / steps;
-          interp.push([
-            lat1 + (lat2 - lat1) * t,
-            lng1 + (lng2 - lng1) * t,
-          ]);
-        }
-      }
-      interp.push(pts[pts.length - 1]);
+  //     const interp = [];
+  //     for (let i = 0; i < pts.length - 1; i++) {
+  //       const [lat1, lng1] = pts[i];
+  //       const [lat2, lng2] = pts[i + 1];
+  //       interp.push([lat1, lng1]);
+  //       const steps = 8;
+  //       for (let k = 1; k < steps; k++) {
+  //         const t = k / steps;
+  //         interp.push([
+  //           lat1 + (lat2 - lat1) * t,
+  //           lng1 + (lng2 - lng1) * t,
+  //         ]);
+  //       }
+  //     }
+  //     interp.push(pts[pts.length - 1]);
 
-      let totalKm = 0;
-      for (let i = 0; i < pts.length - 1; i++) {
-        totalKm += haversineDistance(
-          pts[i][0],
-          pts[i][1],
-          pts[i + 1][0],
-          pts[i + 1][1]
-        );
-      }
+  //     let totalKm = 0;
+  //     for (let i = 0; i < pts.length - 1; i++) {
+  //       totalKm += haversineDistance(
+  //         pts[i][0],
+  //         pts[i][1],
+  //         pts[i + 1][0],
+  //         pts[i + 1][1]
+  //       );
+  //     }
 
-      const avgSpeedKph = 30;
-      const estDurationSec = (totalKm / avgSpeedKph) * 3600;
+  //     const avgSpeedKph = 30;
+  //     const estDurationSec = (totalKm / avgSpeedKph) * 3600;
 
-      setRouteCoords(interp);
-      setInstructions(
-        orderedStops.map((s, idx) => ({
-          id: `local-${idx}`,
-          instruction: `Proceed to stop ${idx + 1}`,
-          type: "continue",
-          modifier: null,
-          distance: 0,
-          duration: 0,
-          location: [s.lat, s.lng],
-          roadName: "",
-        }))
-      );
+  //     setRouteCoords(interp);
+  //     setInstructions(
+  //       orderedStops.map((s, idx) => ({
+  //         id: `local-${idx}`,
+  //         instruction: `Proceed to stop ${idx + 1}`,
+  //         type: "continue",
+  //         modifier: null,
+  //         distance: 0,
+  //         duration: 0,
+  //         location: [s.lat, s.lng],
+  //         roadName: "",
+  //       }))
+  //     );
 
-      setStats({
-        km: totalKm.toFixed(1),
-        min: Math.round(estDurationSec / 60),
-      });
+  //     setStats({
+  //       km: totalKm.toFixed(1),
+  //       min: Math.round(estDurationSec / 60),
+  //     });
 
-      // fallback ETA (distance-based)
-      const basePerStop = estDurationSec / Math.max(1, orderedStops.length);
+  //     // fallback ETA (distance-based)
+  //     const basePerStop = estDurationSec / Math.max(1, orderedStops.length);
 
-      setEtas(
-        orderedStops.map((s, i) =>
-          applyTrafficDrift(
-            Math.round((basePerStop * (i + 1)) / 60),
-            s,
-            roadIssues
-          )
-        )
-      );
-    }
-  } catch (err) {
-    if (err.name !== "AbortError") {
-      console.error("Route calculation failed:", err);
-    }
-  }
+  //     setEtas(
+  //       orderedStops.map((s, i) =>
+  //         applyTrafficDrift(
+  //           Math.round((basePerStop * (i + 1)) / 60),
+  //           s,
+  //           roadIssues
+  //         )
+  //       )
+  //     );
+  //   }
+  // } catch (err) {
+  //   if (err.name !== "AbortError") {
+  //     console.error("Route calculation failed:", err);
+  //   }
+  // }
 // };
 
   
