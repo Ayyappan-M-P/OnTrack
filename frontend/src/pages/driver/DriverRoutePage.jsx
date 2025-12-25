@@ -1200,6 +1200,864 @@
 //   );
 // }
 
+// import { useEffect, useRef, useState } from "react";
+// import L from "leaflet";
+// import "leaflet/dist/leaflet.css";
+// import {
+//   MapContainer,
+//   TileLayer,
+//   Marker,
+//   Polyline,
+//   Tooltip,
+//   Circle,
+//   useMap,
+// } from "react-leaflet";
+
+// /* ===========================
+//    LEAFLET FIX
+// =========================== */
+// delete L.Icon.Default.prototype._getIconUrl;
+// L.Icon.Default.mergeOptions({
+//   iconRetinaUrl: "https://unpkg.com/leaflet@1.9.3/dist/images/marker-icon-2x.png",
+//   iconUrl: "https://unpkg.com/leaflet@1.9.3/dist/images/marker-icon.png",
+//   shadowUrl: "https://unpkg.com/leaflet@1.9.3/dist/images/marker-shadow.png",
+// });
+
+// /* ===========================
+//    CONSTANTS
+// =========================== */
+// const TN_BOUNDS = L.latLngBounds([8.0, 76.0], [13.6, 80.4]);
+// const DEFAULT_CENTER = [11.1271, 78.6569];
+// const ROUTE_DEVIATION_THRESHOLD = 0.15;
+// const ADVANCE_WARNING_DISTANCE = 0.05;
+// const NAVIGATION_ZOOM = 17;
+// const OVERVIEW_ZOOM = 11;
+
+// const ROUTE_MODES = [
+//   { id: "Balanced", label: "🎯 Balanced", desc: "Distance + Priority" },
+//   { id: "PriorityFirst", label: "⭐ Priority", desc: "Highest priority first" },
+//   { id: "TimeWindow", label: "⏰ Time Window", desc: "Scheduled times first" },
+//   { id: "AvoidIssues", label: "🚧 Avoid Issues", desc: "Safest routes" },
+//   { id: "AIOptimized", label: "🤖 AI Optimized", desc: "Shortest total distance" },
+// ];
+
+// const STORAGE_KEY = "driver_route_mode";
+// const API_BASE = `https://ontrack-t99t.onrender.com/api`;
+
+// /* ===========================
+//    HELPERS
+// =========================== */
+// const isValidTN = (lat, lng) =>
+//   Number.isFinite(lat) &&
+//   Number.isFinite(lng) &&
+//   lat >= 8 &&
+//   lat <= 13.6 &&
+//   lng >= 76 &&
+//   lng <= 80.4;
+
+// const haversineDistance = (lat1, lon1, lat2, lon2) => {
+//   const R = 6371;
+//   const dLat = ((lat2 - lat1) * Math.PI) / 180;
+//   const dLon = ((lon2 - lon1) * Math.PI) / 180;
+//   const a =
+//     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+//     Math.cos((lat1 * Math.PI) / 180) *
+//     Math.cos((lat2 * Math.PI) / 180) *
+//     Math.sin(dLon / 2) *
+//     Math.sin(dLon / 2);
+//   return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+// };
+
+// /* ===========================
+//    NAVIGATION HELPERS
+// =========================== */
+// const getInstructionIcon = (type, modifier) => {
+//   if (type === "turn") {
+//     if (modifier?.includes("sharp left")) return "⬅️";
+//     if (modifier?.includes("sharp right")) return "➡️";
+//     if (modifier?.includes("left")) return "↰";
+//     if (modifier?.includes("right")) return "↱";
+//     if (modifier?.includes("slight left")) return "↖️";
+//     if (modifier?.includes("slight right")) return "↗️";
+//   }
+  
+//   const icons = {
+//     depart: "🚀",
+//     arrive: "🎯",
+//     merge: "🔀",
+//     "on ramp": "🛣️",
+//     "off ramp": "🛣️",
+//     fork: "🔱",
+//     "end of road": "⚠️",
+//     continue: "⬆️",
+//     roundabout: "🔄",
+//     rotary: "🔄",
+//   };
+  
+//   return icons[type] || "➡️";
+// };
+
+// const speakInstruction = (text) => {
+//   if ('speechSynthesis' in window) {
+//     window.speechSynthesis.cancel();
+//     const utterance = new SpeechSynthesisUtterance(text);
+//     utterance.rate = 0.85;
+//     utterance.pitch = 1;
+//     utterance.volume = 1;
+//     window.speechSynthesis.speak(utterance);
+//   }
+// };
+
+// /* ===========================
+//    OPTIMIZED ROUTE ALGORITHMS
+//    Each mode produces DIFFERENT routes
+// =========================== */
+// const optimizeRouteByMode = (stops, startPos, roadIssues, mode) => {
+//   if (!stops.length) return [];
+
+//   const calculateIssueRisk = (stop) => {
+//     let risk = 0;
+//     roadIssues.forEach((issue) => {
+//       const dist = haversineDistance(stop.lat, stop.lng, issue.latitude, issue.longitude);
+//       if (dist < 5) {
+//         risk += issue.severity === "Critical" ? 10 : issue.severity === "High" ? 5 : 2;
+//       }
+//     });
+//     return risk;
+//   };
+
+//   const dist = (a, b) => haversineDistance(a.lat, a.lng, b.lat, b.lng);
+
+//   // ===============================
+//   // MODE 1: PRIORITY FIRST
+//   // Strictly sorts by priority, ignoring distance
+//   // ===============================
+//   if (mode === "PriorityFirst") {
+//     return [...stops].sort((a, b) => {
+//       const priorityA = a.aiPriority || a.priority || 0;
+//       const priorityB = b.aiPriority || b.priority || 0;
+//       return priorityB - priorityA;
+//     });
+//   }
+
+//   // ===============================
+//   // MODE 2: TIME WINDOW
+//   // Orders by scheduled time windows
+//   // ===============================
+//   if (mode === "TimeWindow") {
+//     return [...stops].sort((a, b) => {
+//       if (a.windowStart && b.windowStart) {
+//         return new Date(a.windowStart) - new Date(b.windowStart);
+//       }
+//       if (a.windowStart) return -1;
+//       if (b.windowStart) return 1;
+//       return dist(startPos, a) - dist(startPos, b);
+//     });
+//   }
+
+//   // ===============================
+//   // MODE 3: AVOID ISSUES
+//   // Minimizes risk from road issues
+//   // ===============================
+//   if (mode === "AvoidIssues") {
+//     return [...stops].sort((a, b) => {
+//       const riskA = calculateIssueRisk(a);
+//       const riskB = calculateIssueRisk(b);
+      
+//       if (Math.abs(riskA - riskB) > 2) {
+//         return riskA - riskB;
+//       }
+//       return dist(startPos, a) - dist(startPos, b);
+//     });
+//   }
+
+//   // ===============================
+//   // MODE 4: AI OPTIMIZED (TSP)
+//   // Uses 2-opt algorithm for shortest path
+//   // ===============================
+//   if (mode === "AIOptimized") {
+//     let route = [...stops];
+//     let improved = true;
+//     let iterations = 0;
+//     const maxIterations = 50;
+
+//     const calculateTotalDistance = (r) => {
+//       let total = dist(startPos, r[0]);
+//       for (let i = 0; i < r.length - 1; i++) {
+//         total += dist(r[i], r[i + 1]);
+//       }
+//       return total;
+//     };
+
+//     while (improved && iterations < maxIterations) {
+//       improved = false;
+//       iterations++;
+
+//       for (let i = 0; i < route.length - 1; i++) {
+//         for (let j = i + 2; j < route.length; j++) {
+//           const newRoute = [
+//             ...route.slice(0, i + 1),
+//             ...route.slice(i + 1, j + 1).reverse(),
+//             ...route.slice(j + 1)
+//           ];
+
+//           if (calculateTotalDistance(newRoute) < calculateTotalDistance(route)) {
+//             route = newRoute;
+//             improved = true;
+//           }
+//         }
+//       }
+//     }
+
+//     return route;
+//   }
+
+//   // ===============================
+//   // MODE 5: BALANCED (Default)
+//   // Uses weighted nearest neighbor
+//   // ===============================
+//   const remaining = [...stops];
+//   const route = [];
+//   let current = startPos;
+
+//   while (remaining.length > 0) {
+//     let bestIdx = 0;
+//     let bestScore = Infinity;
+
+//     for (let i = 0; i < remaining.length; i++) {
+//       const stop = remaining[i];
+//       const distance = dist(current, stop);
+//       const priority = stop.aiPriority || stop.priority || 1;
+//       const risk = calculateIssueRisk(stop);
+      
+//       // Weighted score: distance matters most, but consider priority
+//       const score = distance * 1.5 - (priority * 0.3) + (risk * 0.2);
+
+//       if (score < bestScore) {
+//         bestScore = score;
+//         bestIdx = i;
+//       }
+//     }
+
+//     route.push(remaining[bestIdx]);
+//     current = remaining[bestIdx];
+//     remaining.splice(bestIdx, 1);
+//   }
+
+//   return route;
+// };
+
+// /* ===========================
+//    ICONS
+// =========================== */
+// const stopIcon = (num, priority) => {
+//   const color = priority >= 4 ? "#dc2626" : priority >= 3 ? "#f59e0b" : "#2563eb";
+//   return L.divIcon({
+//     html: `<div style="
+//       background:${color};
+//       color:white;
+//       width:32px;
+//       height:32px;
+//       border-radius:50%;
+//       display:flex;
+//       align-items:center;
+//       justify-content:center;
+//       font-weight:bold;
+//       border:3px solid white;
+//       box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+//       font-size: 14px;
+//     ">${num}</div>`,
+//     className: "",
+//     iconSize: [32, 32],
+//     iconAnchor: [16, 32],
+//   });
+// };
+
+// const driverIcon = L.divIcon({
+//   html: `<div style="
+//     background:#10b981;
+//     color:white;
+//     width:40px;
+//     height:40px;
+//     border-radius:50%;
+//     display:flex;
+//     align-items:center;
+//     justify-content:center;
+//     font-weight:bold;
+//     border:4px solid white;
+//     box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+//     font-size: 20px;
+//   ">🚗</div>`,
+//   className: "",
+//   iconSize: [40, 40],
+//   iconAnchor: [20, 40],
+// });
+
+// /* ===========================
+//    NAVIGATION ZOOM COMPONENT
+// =========================== */
+// function NavigationZoom({ isNavigating, driverPos, nextStop }) {
+//   const map = useMap();
+
+//   useEffect(() => {
+//     if (isNavigating && driverPos) {
+//       // Smooth zoom to driver location during navigation
+//       map.setView([driverPos.lat, driverPos.lng], NAVIGATION_ZOOM, {
+//         animate: true,
+//         duration: 1
+//       });
+//     }
+//   }, [isNavigating, driverPos, map]);
+
+//   return null;
+// }
+
+// /* ===========================
+//    MAP BOUNDS COMPONENT
+// =========================== */
+// function MapBoundsFitter({ coords, stops, driverPos, isNavigating }) {
+//   const map = useMap();
+
+//   useEffect(() => {
+//     if (isNavigating) return; // Don't adjust bounds during navigation
+
+//     const pts = [];
+//     if (driverPos) pts.push([driverPos.lat, driverPos.lng]);
+//     coords.forEach(([lat, lng]) => isValidTN(lat, lng) && pts.push([lat, lng]));
+//     stops.forEach((s) => isValidTN(s.lat, s.lng) && pts.push([s.lat, s.lng]));
+
+//     if (pts.length > 1) {
+//       const bounds = L.latLngBounds(pts).pad(0.15);
+//       map.fitBounds(bounds.intersects(TN_BOUNDS) ? bounds : TN_BOUNDS);
+//     }
+//   }, [coords, stops, driverPos, isNavigating, map]);
+
+//   return null;
+// }
+
+// /* ===========================
+//    ROUTE API
+// =========================== */
+// async function fetchRouteWithSteps(stops, issues, mode, signal, driverPos) {
+//   const allStops = driverPos ? [
+//     { lat: driverPos.lat, lng: driverPos.lng, priority: 0 },
+//     ...stops
+//   ] : stops;
+
+//   const payload = {
+//     stops: allStops.map((s) => ({
+//       lat: s.lat,
+//       lng: s.lng,
+//       priority: s.aiPriority || s.priority || 0,
+//       windowStart: s.windowStart,
+//       windowEnd: null,
+//     })),
+//     roadIssues: issues,
+//     driverLocation: driverPos,
+//     optimizationMode: mode,
+//   };
+
+//   const res = await fetch(`${API_BASE}/route/optimize`, {
+//     method: "POST",
+//     headers: { "Content-Type": "application/json" },
+//     body: JSON.stringify(payload),
+//     signal,
+//   });
+
+//   const data = await res.json();
+//   const route = data.routes[0];
+
+//   const instructions = [];
+//   route.legs.forEach((leg, legIdx) => {
+//     leg.steps.forEach((step, stepIdx) => {
+//       const [lng, lat] = step.maneuver.location;
+//       instructions.push({
+//         id: `${legIdx}-${stepIdx}`,
+//         instruction: step.maneuver.instruction || step.name || "Continue",
+//         type: step.maneuver.type,
+//         modifier: step.maneuver.modifier,
+//         distance: step.distance,
+//         duration: step.duration,
+//         location: [lat, lng],
+//         roadName: step.name,
+//       });
+//     });
+//   });
+
+//   return {
+//     coords: route.geometry.coordinates.map(([lng, lat]) => [lat, lng]),
+//     duration: route.duration,
+//     distance: route.distance,
+//     instructions,
+//   };
+// }
+
+// /* ===========================
+//    API CALLS
+// =========================== */
+// async function fetchOrders() {
+//   const token = localStorage.getItem("token");
+//   const res = await fetch(`${API_BASE}/driver/route/optimized`, {
+//     headers: { Authorization: `Bearer ${token}` },
+//   });
+//   return res.json();
+// }
+
+// async function fetchRoadIssues() {
+//   const token = localStorage.getItem("token");
+//   const res = await fetch(`${API_BASE}/driver/road-issues`, {
+//     headers: { Authorization: `Bearer ${token}` },
+//   });
+//   return res.json();
+// }
+
+// /* ===========================
+//    MAIN COMPONENT
+// =========================== */
+// export default function DriverRoutePage() {
+//   const abortRef = useRef(null);
+//   const locationWatchRef = useRef(null);
+//   const lastInstructionRef = useRef(null);
+
+//   const [rawStops, setRawStops] = useState([]);
+//   const [stops, setStops] = useState([]);
+//   const [roadIssues, setRoadIssues] = useState([]);
+//   const [routeCoords, setRouteCoords] = useState([]);
+//   const [instructions, setInstructions] = useState([]);
+//   const [currentInstruction, setCurrentInstruction] = useState(null);
+//   const [nextInstruction, setNextInstruction] = useState(null);
+//   const [etas, setEtas] = useState([]);
+//   const [stats, setStats] = useState(null);
+//   const [routing, setRouting] = useState(false);
+//   const [driverLocation, setDriverLocation] = useState(null);
+//   const [isNavigating, setIsNavigating] = useState(false);
+//   const [voiceEnabled, setVoiceEnabled] = useState(true);
+//   const [mode, setMode] = useState(localStorage.getItem(STORAGE_KEY) || "Balanced");
+
+//   /* LOAD DATA */
+//   useEffect(() => {
+//     const loadData = async () => {
+//       try {
+//         const [ordersData, issuesData] = await Promise.all([
+//           fetchOrders(),
+//           fetchRoadIssues(),
+//         ]);
+
+//         const mappedStops = ordersData
+//           .map((o) => ({
+//             id: o.id,
+//             trackingId: o.trackingId,
+//             lat: Number(o.deliveryLatitude ?? o.pickupLatitude),
+//             lng: Number(o.deliveryLongitude ?? o.pickupLongitude),
+//             priority: o.priority ?? 2,
+//             aiPriority: o.aiPriority,
+//             aiJustification: o.aiPriorityJustification,
+//             windowStart: o.scheduledDate,
+//             receiverName: o.receiverName,
+//             receiverAddress: o.receiverAddress,
+//             receiverPhone: o.receiverPhone,
+//             status: o.status,
+//           }))
+//           .filter((s) => isValidTN(s.lat, s.lng));
+
+//         setRawStops(mappedStops);
+//         setRoadIssues(issuesData || []);
+//       } catch (error) {
+//         console.error("Failed to load data:", error);
+//       }
+//     };
+
+//     loadData();
+//   }, []);
+
+//   /* GET LOCATION */
+//   useEffect(() => {
+//     if (navigator.geolocation) {
+//       navigator.geolocation.getCurrentPosition(
+//         (position) => {
+//           const pos = {
+//             lat: position.coords.latitude,
+//             lng: position.coords.longitude,
+//           };
+//           if (isValidTN(pos.lat, pos.lng)) {
+//             setDriverLocation(pos);
+//           } else if (rawStops.length > 0) {
+//             setDriverLocation({ lat: rawStops[0].lat, lng: rawStops[0].lng });
+//           }
+//         },
+//         (error) => {
+//           console.error("Geolocation error:", error);
+//           if (rawStops.length > 0) {
+//             setDriverLocation({ lat: rawStops[0].lat, lng: rawStops[0].lng });
+//           }
+//         }
+//       );
+//     }
+//   }, [rawStops]);
+
+//   /* CALCULATE ROUTE */
+//   const calculateRoute = async (orderedStops) => {
+//     if (!orderedStops.length || !driverLocation) return;
+
+//     abortRef.current?.abort();
+//     abortRef.current = new AbortController();
+//     setRouting(true);
+
+//     try {
+//       const result = await fetchRouteWithSteps(
+//         orderedStops,
+//         roadIssues,
+//         mode,
+//         abortRef.current.signal,
+//         driverLocation
+//       );
+
+//       setRouteCoords(result.coords);
+//       setInstructions(result.instructions);
+      
+//       if (result.instructions.length > 0) {
+//         setCurrentInstruction(result.instructions[0]);
+//         setNextInstruction(result.instructions[1] || null);
+//       }
+
+//       const totalDist = result.distance / 1000;
+//       const totalTime = result.duration / 60;
+
+//       setStats({
+//         distance: totalDist.toFixed(1),
+//         duration: Math.round(totalTime),
+//         stops: orderedStops.length,
+//       });
+
+//       const etaList = orderedStops.map((_, idx) => {
+//         const baseEta = ((idx + 1) / orderedStops.length) * totalTime;
+//         return Math.round(baseEta);
+//       });
+//       setEtas(etaList);
+
+//     } catch (err) {
+//       if (err.name !== "AbortError") {
+//         console.error("Route calculation failed:", err);
+//       }
+//     } finally {
+//       setRouting(false);
+//     }
+//   };
+
+//   /* OPTIMIZE AND CALCULATE */
+//   useEffect(() => {
+//     if (rawStops.length > 0 && driverLocation) {
+//       const optimized = optimizeRouteByMode(rawStops, driverLocation, roadIssues, mode);
+//       setStops(optimized);
+//       calculateRoute(optimized);
+//     }
+//   }, [rawStops, roadIssues, mode, driverLocation]);
+
+//   /* HANDLE MODE CHANGE */
+//   const handleModeChange = (newMode) => {
+//     setMode(newMode);
+//     localStorage.setItem(STORAGE_KEY, newMode);
+//   };
+
+//   /* START NAVIGATION */
+//   const startNavigation = () => {
+//     setIsNavigating(true);
+    
+//     if (currentInstruction && voiceEnabled) {
+//       speakInstruction(currentInstruction.instruction);
+//     }
+
+//     if (navigator.geolocation) {
+//       locationWatchRef.current = navigator.geolocation.watchPosition(
+//         (position) => {
+//           const pos = {
+//             lat: position.coords.latitude,
+//             lng: position.coords.longitude,
+//           };
+          
+//           if (isValidTN(pos.lat, pos.lng)) {
+//             setDriverLocation(pos);
+            
+//             // Check proximity to current instruction
+//             if (currentInstruction) {
+//               const distToInstruction = haversineDistance(
+//                 pos.lat,
+//                 pos.lng,
+//                 currentInstruction.location[0],
+//                 currentInstruction.location[1]
+//               );
+
+//               if (distToInstruction < 0.03) { // 30 meters
+//                 const currentIdx = instructions.findIndex(i => i.id === currentInstruction.id);
+//                 if (currentIdx < instructions.length - 1) {
+//                   const next = instructions[currentIdx + 1];
+//                   setCurrentInstruction(next);
+//                   setNextInstruction(instructions[currentIdx + 2] || null);
+                  
+//                   if (voiceEnabled) {
+//                     speakInstruction(next.instruction);
+//                   }
+//                 }
+//               }
+//             }
+//           }
+//         },
+//         (error) => console.error("Location watch error:", error),
+//         { enableHighAccuracy: true, maximumAge: 1000, timeout: 5000 }
+//       );
+//     }
+//   };
+
+//   /* STOP NAVIGATION */
+//   const stopNavigation = () => {
+//     setIsNavigating(false);
+    
+//     if (locationWatchRef.current) {
+//       navigator.geolocation.clearWatch(locationWatchRef.current);
+//       locationWatchRef.current = null;
+//     }
+    
+//     if (window.speechSynthesis) {
+//       window.speechSynthesis.cancel();
+//     }
+//   };
+
+//   return (
+//     <div className="h-screen w-full flex flex-col bg-gray-50">
+//       {/* Header */}
+//       <div className="bg-white shadow-md px-4 py-3 flex items-center justify-between z-10">
+//         <div className="flex items-center gap-3">
+//           <div className="text-2xl">🗺️</div>
+//           <div>
+//             <h1 className="text-lg font-bold text-gray-800">Driver Navigation</h1>
+//             <p className="text-xs text-gray-500">
+//               {stops.length} stops • {stats?.distance || 0} km
+//             </p>
+//           </div>
+//         </div>
+
+//         <div className="flex items-center gap-2">
+//           {isNavigating ? (
+//             <button
+//               onClick={stopNavigation}
+//               className="px-4 py-2 bg-red-500 text-white rounded-lg font-medium hover:bg-red-600 transition-colors"
+//             >
+//               Stop Navigation
+//             </button>
+//           ) : (
+//             <button
+//               onClick={startNavigation}
+//               disabled={!routeCoords.length || routing}
+//               className="px-4 py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+//             >
+//               Start Navigation
+//             </button>
+//           )}
+          
+//           <button
+//             onClick={() => setVoiceEnabled(!voiceEnabled)}
+//             className={`p-2 rounded-lg transition-colors ${
+//               voiceEnabled ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'
+//             }`}
+//           >
+//             {voiceEnabled ? '🔊' : '🔇'}
+//           </button>
+//         </div>
+//       </div>
+
+//       {/* Route Mode Selector */}
+//       <div className="bg-white px-4 py-2 shadow-sm overflow-x-auto">
+//         <div className="flex gap-2 min-w-max">
+//           {ROUTE_MODES.map((m) => (
+//             <button
+//               key={m.id}
+//               onClick={() => handleModeChange(m.id)}
+//               disabled={routing}
+//               className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+//                 mode === m.id
+//                   ? 'bg-blue-500 text-white shadow-md'
+//                   : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+//               } disabled:opacity-50 disabled:cursor-not-allowed`}
+//             >
+//               <div>{m.label}</div>
+//               <div className="text-xs opacity-75">{m.desc}</div>
+//             </button>
+//           ))}
+//         </div>
+//       </div>
+
+//       {/* Navigation Instructions */}
+//       {isNavigating && currentInstruction && (
+//         <div className="bg-blue-50 border-l-4 border-blue-500 px-4 py-3">
+//           <div className="flex items-center gap-3">
+//             <div className="text-3xl">
+//               {getInstructionIcon(currentInstruction.type, currentInstruction.modifier)}
+//             </div>
+//             <div className="flex-1">
+//               <div className="font-bold text-gray-800">
+//                 {currentInstruction.instruction}
+//               </div>
+//               {currentInstruction.roadName && (
+//                 <div className="text-sm text-gray-600">
+//                   on {currentInstruction.roadName}
+//                 </div>
+//               )}
+//               <div className="text-xs text-gray-500 mt-1">
+//                 in {(currentInstruction.distance / 1000).toFixed(1)} km
+//               </div>
+//             </div>
+//           </div>
+          
+//           {nextInstruction && (
+//             <div className="mt-2 pt-2 border-t border-blue-200 text-sm text-gray-600">
+//               <span className="font-medium">Then:</span> {nextInstruction.instruction}
+//             </div>
+//           )}
+//         </div>
+//       )}
+
+//       {/* Map */}
+//       <div className="flex-1 relative">
+//         {routing && (
+//           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-white px-4 py-2 rounded-lg shadow-lg">
+//             <div className="flex items-center gap-2">
+//               <div className="animate-spin text-blue-500">⚙️</div>
+//               <span className="text-sm font-medium">Calculating route...</span>
+//             </div>
+//           </div>
+//         )}
+
+//         <MapContainer
+//           center={DEFAULT_CENTER}
+//           zoom={OVERVIEW_ZOOM}
+//           className="h-full w-full"
+//           zoomControl={!isNavigating}
+//           attributionControl={false}
+//         >
+//           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          
+//           <NavigationZoom
+//             isNavigating={isNavigating}
+//             driverPos={driverLocation}
+//             nextStop={stops[0]}
+//           />
+          
+//           <MapBoundsFitter
+//             coords={routeCoords}
+//             stops={stops}
+//             driverPos={driverLocation}
+//             isNavigating={isNavigating}
+//           />
+
+//           {/* Driver Location */}
+//           {driverLocation && (
+//             <Marker
+//               position={[driverLocation.lat, driverLocation.lng]}
+//               icon={driverIcon}
+//             >
+//               <Tooltip permanent={isNavigating} direction="top">
+//                 <strong>You are here</strong>
+//               </Tooltip>
+//             </Marker>
+//           )}
+
+//           {/* Stop Markers */}
+//           {stops.map((stop, idx) => (
+//             <Marker
+//               key={stop.id}
+//               position={[stop.lat, stop.lng]}
+//               icon={stopIcon(idx + 1, stop.aiPriority || stop.priority)}
+//             >
+//               <Tooltip>
+//                 <div className="text-xs">
+//                   <div className="font-bold">Stop {idx + 1}</div>
+//                   <div>{stop.receiverName}</div>
+//                   <div className="text-gray-600">{stop.receiverAddress}</div>
+//                   {etas[idx] && <div className="mt-1 text-blue-600">ETA: {etas[idx]} min</div>}
+//                 </div>
+//               </Tooltip>
+//             </Marker>
+//           ))}
+
+//           {/* Route Line */}
+//           {routeCoords.length > 0 && (
+//             <Polyline
+//               positions={routeCoords}
+//               color="#3b82f6"
+//               weight={5}
+//               opacity={0.7}
+//             />
+//           )}
+
+//           {/* Road Issues */}
+//           {roadIssues.map((issue) => (
+//             <Circle
+//               key={issue.id}
+//               center={[issue.latitude, issue.longitude]}
+//               radius={issue.severity === "Critical" ? 5000 : issue.severity === "High" ? 3000 : 2000}
+//               pathOptions={{
+//                 color: issue.severity === "Critical" ? "#dc2626" : issue.severity === "High" ? "#f59e0b" : "#fbbf24",
+//                 fillColor: issue.severity === "Critical" ? "#dc2626" : issue.severity === "High" ? "#f59e0b" : "#fbbf24",
+//                 fillOpacity: 0.15,
+//               }}
+//             >
+//               <Tooltip>
+//                 <div className="text-xs">
+//                   <div className="font-bold text-red-600">{issue.severity}</div>
+//                   <div>{issue.description}</div>
+//                   <div className="text-gray-500">{issue.location}</div>
+//                 </div>
+//               </Tooltip>
+//             </Circle>
+//           ))}
+//         </MapContainer>
+//       </div>
+
+//       {/* Stop List */}
+//       <div className="bg-white border-t shadow-lg max-h-64 overflow-y-auto">
+//         <div className="px-4 py-3 border-b bg-gray-50">
+//           <h3 className="font-bold text-gray-800">Delivery Sequence</h3>
+//           <p className="text-xs text-gray-500">Optimized by: {ROUTE_MODES.find(m => m.id === mode)?.label}</p>
+//         </div>
+//         <div className="divide-y">
+//           {stops.map((stop, idx) => (
+//             <div key={stop.id} className="px-4 py-3 hover:bg-gray-50 transition-colors">
+//               <div className="flex items-center gap-3">
+//                 <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-white text-sm ${
+//                   (stop.aiPriority || stop.priority) >= 4 ? 'bg-red-600' : (stop.aiPriority || stop.priority) >= 3 ? 'bg-amber-500' : 'bg-blue-500'
+//                 }`}>
+//                   {idx + 1}
+//                 </div>
+//                 <div className="flex-1">
+//                   <div className="font-semibold text-gray-800">{stop.receiverName}</div>
+//                   <div className="text-sm text-gray-600">{stop.receiverAddress}</div>
+//                   <div className="flex items-center gap-2 mt-1">
+//                     {stop.aiPriority && (
+//                       <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
+//                         AI Priority: {stop.aiPriority}
+//                       </span>
+//                     )}
+//                     {etas[idx] && (
+//                       <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
+//                         ETA: {etas[idx]} min
+//                       </span>
+//                     )}
+//                     {stop.windowStart && (
+//                       <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded">
+//                         Scheduled: {new Date(stop.windowStart).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+//                       </span>
+//                     )}
+//                   </div>
+//                 </div>
+//               </div>
+//             </div>
+//           ))}
+//         </div>
+//       </div>
+//     </div>
+//   );
+// }
+
 import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -1228,17 +2086,15 @@ L.Icon.Default.mergeOptions({
 =========================== */
 const TN_BOUNDS = L.latLngBounds([8.0, 76.0], [13.6, 80.4]);
 const DEFAULT_CENTER = [11.1271, 78.6569];
-const ROUTE_DEVIATION_THRESHOLD = 0.15;
-const ADVANCE_WARNING_DISTANCE = 0.05;
 const NAVIGATION_ZOOM = 17;
 const OVERVIEW_ZOOM = 11;
 
 const ROUTE_MODES = [
-  { id: "Balanced", label: "🎯 Balanced", desc: "Distance + Priority" },
-  { id: "PriorityFirst", label: "⭐ Priority", desc: "Highest priority first" },
-  { id: "TimeWindow", label: "⏰ Time Window", desc: "Scheduled times first" },
-  { id: "AvoidIssues", label: "🚧 Avoid Issues", desc: "Safest routes" },
-  { id: "AIOptimized", label: "🤖 AI Optimized", desc: "Shortest total distance" },
+  { id: "Balanced", label: "🎯 Balanced", color: "#3b82f6", desc: "Distance + Priority" },
+  { id: "PriorityFirst", label: "⭐ Priority", color: "#dc2626", desc: "Highest priority first" },
+  { id: "TimeWindow", label: "⏰ Time Window", color: "#f59e0b", desc: "Scheduled times first" },
+  { id: "AvoidIssues", label: "🚧 Avoid Issues", color: "#10b981", desc: "Safest routes" },
+  { id: "AIOptimized", label: "🤖 AI Optimized", color: "#8b5cf6", desc: "Shortest total distance" },
 ];
 
 const STORAGE_KEY = "driver_route_mode";
@@ -1310,7 +2166,7 @@ const speakInstruction = (text) => {
 
 /* ===========================
    OPTIMIZED ROUTE ALGORITHMS
-   Each mode produces DIFFERENT routes
+   Each mode produces DIFFERENT stop sequences
 =========================== */
 const optimizeRouteByMode = (stops, startPos, roadIssues, mode) => {
   if (!stops.length) return [];
@@ -1328,22 +2184,17 @@ const optimizeRouteByMode = (stops, startPos, roadIssues, mode) => {
 
   const dist = (a, b) => haversineDistance(a.lat, a.lng, b.lat, b.lng);
 
-  // ===============================
   // MODE 1: PRIORITY FIRST
-  // Strictly sorts by priority, ignoring distance
-  // ===============================
   if (mode === "PriorityFirst") {
     return [...stops].sort((a, b) => {
       const priorityA = a.aiPriority || a.priority || 0;
       const priorityB = b.aiPriority || b.priority || 0;
-      return priorityB - priorityA;
+      if (priorityB !== priorityA) return priorityB - priorityA;
+      return dist(startPos, a) - dist(startPos, b);
     });
   }
 
-  // ===============================
   // MODE 2: TIME WINDOW
-  // Orders by scheduled time windows
-  // ===============================
   if (mode === "TimeWindow") {
     return [...stops].sort((a, b) => {
       if (a.windowStart && b.windowStart) {
@@ -1355,31 +2206,27 @@ const optimizeRouteByMode = (stops, startPos, roadIssues, mode) => {
     });
   }
 
-  // ===============================
   // MODE 3: AVOID ISSUES
-  // Minimizes risk from road issues
-  // ===============================
   if (mode === "AvoidIssues") {
-    return [...stops].sort((a, b) => {
-      const riskA = calculateIssueRisk(a);
-      const riskB = calculateIssueRisk(b);
-      
-      if (Math.abs(riskA - riskB) > 2) {
-        return riskA - riskB;
+    const stopsWithRisk = stops.map(s => ({
+      ...s,
+      risk: calculateIssueRisk(s)
+    }));
+    
+    return stopsWithRisk.sort((a, b) => {
+      if (Math.abs(a.risk - b.risk) > 2) {
+        return a.risk - b.risk;
       }
       return dist(startPos, a) - dist(startPos, b);
     });
   }
 
-  // ===============================
-  // MODE 4: AI OPTIMIZED (TSP)
-  // Uses 2-opt algorithm for shortest path
-  // ===============================
+  // MODE 4: AI OPTIMIZED (TSP using 2-opt)
   if (mode === "AIOptimized") {
     let route = [...stops];
     let improved = true;
     let iterations = 0;
-    const maxIterations = 50;
+    const maxIterations = 100;
 
     const calculateTotalDistance = (r) => {
       let total = dist(startPos, r[0]);
@@ -1412,10 +2259,7 @@ const optimizeRouteByMode = (stops, startPos, roadIssues, mode) => {
     return route;
   }
 
-  // ===============================
-  // MODE 5: BALANCED (Default)
-  // Uses weighted nearest neighbor
-  // ===============================
+  // MODE 5: BALANCED (Weighted nearest neighbor)
   const remaining = [...stops];
   const route = [];
   let current = startPos;
@@ -1430,7 +2274,6 @@ const optimizeRouteByMode = (stops, startPos, roadIssues, mode) => {
       const priority = stop.aiPriority || stop.priority || 1;
       const risk = calculateIssueRisk(stop);
       
-      // Weighted score: distance matters most, but consider priority
       const score = distance * 1.5 - (priority * 0.3) + (risk * 0.2);
 
       if (score < bestScore) {
@@ -1445,6 +2288,50 @@ const optimizeRouteByMode = (stops, startPos, roadIssues, mode) => {
   }
 
   return route;
+};
+
+/* ===========================
+   CALCULATE ROUTE METRICS
+=========================== */
+const calculateRouteMetrics = (stops, startPos, roadIssues) => {
+  if (!stops.length) return { distance: 0, duration: 0, etas: [] };
+
+  const calculateIssueDelay = (stop) => {
+    let delay = 0;
+    roadIssues.forEach((issue) => {
+      const dist = haversineDistance(stop.lat, stop.lng, issue.latitude, issue.longitude);
+      if (dist < 2) {
+        delay += issue.severity === "Critical" ? 15 : issue.severity === "High" ? 10 : 5;
+      }
+    });
+    return delay;
+  };
+
+  let totalDistance = 0;
+  let totalTime = 0;
+  const etas = [];
+  let current = startPos;
+
+  stops.forEach((stop) => {
+    const segmentDist = haversineDistance(current.lat, current.lng, stop.lat, stop.lng);
+    totalDistance += segmentDist;
+    
+    // Calculate time: avg speed 40 km/h + issue delays + 5 min per stop
+    const baseTime = (segmentDist / 40) * 60; // minutes
+    const issueDelay = calculateIssueDelay(stop);
+    const stopTime = 5; // 5 minutes per stop
+    
+    totalTime += baseTime + issueDelay + stopTime;
+    etas.push(Math.round(totalTime));
+    
+    current = stop;
+  });
+
+  return {
+    distance: totalDistance,
+    duration: Math.round(totalTime),
+    etas
+  };
 };
 
 /* ===========================
@@ -1496,12 +2383,11 @@ const driverIcon = L.divIcon({
 /* ===========================
    NAVIGATION ZOOM COMPONENT
 =========================== */
-function NavigationZoom({ isNavigating, driverPos, nextStop }) {
+function NavigationZoom({ isNavigating, driverPos }) {
   const map = useMap();
 
   useEffect(() => {
     if (isNavigating && driverPos) {
-      // Smooth zoom to driver location during navigation
       map.setView([driverPos.lat, driverPos.lng], NAVIGATION_ZOOM, {
         animate: true,
         duration: 1
@@ -1519,7 +2405,7 @@ function MapBoundsFitter({ coords, stops, driverPos, isNavigating }) {
   const map = useMap();
 
   useEffect(() => {
-    if (isNavigating) return; // Don't adjust bounds during navigation
+    if (isNavigating) return;
 
     const pts = [];
     if (driverPos) pts.push([driverPos.lat, driverPos.lng]);
@@ -1617,7 +2503,6 @@ async function fetchRoadIssues() {
 export default function DriverRoutePage() {
   const abortRef = useRef(null);
   const locationWatchRef = useRef(null);
-  const lastInstructionRef = useRef(null);
 
   const [rawStops, setRawStops] = useState([]);
   const [stops, setStops] = useState([]);
@@ -1720,20 +2605,16 @@ export default function DriverRoutePage() {
         setNextInstruction(result.instructions[1] || null);
       }
 
-      const totalDist = result.distance / 1000;
-      const totalTime = result.duration / 60;
+      // Calculate actual metrics based on optimized route
+      const metrics = calculateRouteMetrics(orderedStops, driverLocation, roadIssues);
 
       setStats({
-        distance: totalDist.toFixed(1),
-        duration: Math.round(totalTime),
+        distance: metrics.distance.toFixed(1),
+        duration: metrics.duration,
         stops: orderedStops.length,
       });
 
-      const etaList = orderedStops.map((_, idx) => {
-        const baseEta = ((idx + 1) / orderedStops.length) * totalTime;
-        return Math.round(baseEta);
-      });
-      setEtas(etaList);
+      setEtas(metrics.etas);
 
     } catch (err) {
       if (err.name !== "AbortError") {
@@ -1778,7 +2659,6 @@ export default function DriverRoutePage() {
           if (isValidTN(pos.lat, pos.lng)) {
             setDriverLocation(pos);
             
-            // Check proximity to current instruction
             if (currentInstruction) {
               const distToInstruction = haversineDistance(
                 pos.lat,
@@ -1787,7 +2667,7 @@ export default function DriverRoutePage() {
                 currentInstruction.location[1]
               );
 
-              if (distToInstruction < 0.03) { // 30 meters
+              if (distToInstruction < 0.03) {
                 const currentIdx = instructions.findIndex(i => i.id === currentInstruction.id);
                 if (currentIdx < instructions.length - 1) {
                   const next = instructions[currentIdx + 1];
@@ -1822,6 +2702,8 @@ export default function DriverRoutePage() {
     }
   };
 
+  const currentModeColor = ROUTE_MODES.find(m => m.id === mode)?.color || "#3b82f6";
+
   return (
     <div className="h-screen w-full flex flex-col bg-gray-50">
       {/* Header */}
@@ -1831,7 +2713,7 @@ export default function DriverRoutePage() {
           <div>
             <h1 className="text-lg font-bold text-gray-800">Driver Navigation</h1>
             <p className="text-xs text-gray-500">
-              {stops.length} stops • {stats?.distance || 0} km
+              {stops.length} stops • {stats?.distance || 0} km • {stats?.duration || 0} min
             </p>
           </div>
         </div>
@@ -1840,17 +2722,17 @@ export default function DriverRoutePage() {
           {isNavigating ? (
             <button
               onClick={stopNavigation}
-              className="px-4 py-2 bg-red-500 text-white rounded-lg font-medium hover:bg-red-600 transition-colors"
+              className="px-4 py-2 bg-red-500 text-white rounded-lg font-medium hover:bg-red-600 transition-colors text-sm"
             >
-              Stop Navigation
+              Stop
             </button>
           ) : (
             <button
               onClick={startNavigation}
               disabled={!routeCoords.length || routing}
-              className="px-4 py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
             >
-              Start Navigation
+              Start
             </button>
           )}
           
@@ -1866,57 +2748,30 @@ export default function DriverRoutePage() {
       </div>
 
       {/* Route Mode Selector */}
-      <div className="bg-white px-4 py-2 shadow-sm overflow-x-auto">
-        <div className="flex gap-2 min-w-max">
-          {ROUTE_MODES.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => handleModeChange(m.id)}
-              disabled={routing}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                mode === m.id
-                  ? 'bg-blue-500 text-white shadow-md'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              } disabled:opacity-50 disabled:cursor-not-allowed`}
-            >
-              <div>{m.label}</div>
-              <div className="text-xs opacity-75">{m.desc}</div>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Navigation Instructions */}
-      {isNavigating && currentInstruction && (
-        <div className="bg-blue-50 border-l-4 border-blue-500 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="text-3xl">
-              {getInstructionIcon(currentInstruction.type, currentInstruction.modifier)}
-            </div>
-            <div className="flex-1">
-              <div className="font-bold text-gray-800">
-                {currentInstruction.instruction}
-              </div>
-              {currentInstruction.roadName && (
-                <div className="text-sm text-gray-600">
-                  on {currentInstruction.roadName}
-                </div>
-              )}
-              <div className="text-xs text-gray-500 mt-1">
-                in {(currentInstruction.distance / 1000).toFixed(1)} km
-              </div>
-            </div>
+      {!isNavigating && (
+        <div className="bg-white px-4 py-2 shadow-sm overflow-x-auto">
+          <div className="flex gap-2 min-w-max">
+            {ROUTE_MODES.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => handleModeChange(m.id)}
+                disabled={routing}
+                className={`px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                  mode === m.id
+                    ? 'text-white shadow-md'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                style={mode === m.id ? { backgroundColor: m.color } : {}}
+              >
+                <div>{m.label}</div>
+                <div className="text-xs opacity-75">{m.desc}</div>
+              </button>
+            ))}
           </div>
-          
-          {nextInstruction && (
-            <div className="mt-2 pt-2 border-t border-blue-200 text-sm text-gray-600">
-              <span className="font-medium">Then:</span> {nextInstruction.instruction}
-            </div>
-          )}
         </div>
       )}
 
-      {/* Map */}
+      {/* Map Container */}
       <div className="flex-1 relative">
         {routing && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-white px-4 py-2 rounded-lg shadow-lg">
@@ -1927,11 +2782,41 @@ export default function DriverRoutePage() {
           </div>
         )}
 
+        {/* Navigation Instructions - Floating above map */}
+        {isNavigating && currentInstruction && (
+          <div className="absolute top-4 left-4 right-4 z-[1000] bg-white rounded-lg shadow-xl border-l-4 border-blue-500 p-4 max-w-md">
+            <div className="flex items-start gap-3">
+              <div className="text-3xl flex-shrink-0">
+                {getInstructionIcon(currentInstruction.type, currentInstruction.modifier)}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-bold text-gray-800 text-lg">
+                  {currentInstruction.instruction}
+                </div>
+                {currentInstruction.roadName && (
+                  <div className="text-sm text-gray-600 mt-1">
+                    on {currentInstruction.roadName}
+                  </div>
+                )}
+                <div className="text-xs text-gray-500 mt-1">
+                  in {(currentInstruction.distance / 1000).toFixed(1)} km
+                </div>
+              </div>
+            </div>
+            
+            {nextInstruction && (
+              <div className="mt-3 pt-3 border-t border-gray-200 text-sm text-gray-600">
+                <span className="font-medium">Then:</span> {nextInstruction.instruction}
+              </div>
+            )}
+          </div>
+        )}
+
         <MapContainer
           center={DEFAULT_CENTER}
           zoom={OVERVIEW_ZOOM}
           className="h-full w-full"
-          zoomControl={!isNavigating}
+          zoomControl={true}
           attributionControl={false}
         >
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
@@ -1939,7 +2824,6 @@ export default function DriverRoutePage() {
           <NavigationZoom
             isNavigating={isNavigating}
             driverPos={driverLocation}
-            nextStop={stops[0]}
           />
           
           <MapBoundsFitter
@@ -1955,7 +2839,7 @@ export default function DriverRoutePage() {
               position={[driverLocation.lat, driverLocation.lng]}
               icon={driverIcon}
             >
-              <Tooltip permanent={isNavigating} direction="top">
+              <Tooltip permanent={isNavigating} direction="top" offset={[0, -20]}>
                 <strong>You are here</strong>
               </Tooltip>
             </Marker>
@@ -1979,13 +2863,13 @@ export default function DriverRoutePage() {
             </Marker>
           ))}
 
-          {/* Route Line */}
+          {/* Route Line with unique color per mode */}
           {routeCoords.length > 0 && (
             <Polyline
               positions={routeCoords}
-              color="#3b82f6"
-              weight={5}
-              opacity={0.7}
+              color={currentModeColor}
+              weight={6}
+              opacity={0.8}
             />
           )}
 
@@ -2013,47 +2897,52 @@ export default function DriverRoutePage() {
         </MapContainer>
       </div>
 
-      {/* Stop List */}
-      <div className="bg-white border-t shadow-lg max-h-64 overflow-y-auto">
-        <div className="px-4 py-3 border-b bg-gray-50">
-          <h3 className="font-bold text-gray-800">Delivery Sequence</h3>
-          <p className="text-xs text-gray-500">Optimized by: {ROUTE_MODES.find(m => m.id === mode)?.label}</p>
-        </div>
-        <div className="divide-y">
-          {stops.map((stop, idx) => (
-            <div key={stop.id} className="px-4 py-3 hover:bg-gray-50 transition-colors">
-              <div className="flex items-center gap-3">
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-white text-sm ${
-                  (stop.aiPriority || stop.priority) >= 4 ? 'bg-red-600' : (stop.aiPriority || stop.priority) >= 3 ? 'bg-amber-500' : 'bg-blue-500'
-                }`}>
-                  {idx + 1}
-                </div>
-                <div className="flex-1">
-                  <div className="font-semibold text-gray-800">{stop.receiverName}</div>
-                  <div className="text-sm text-gray-600">{stop.receiverAddress}</div>
-                  <div className="flex items-center gap-2 mt-1">
-                    {stop.aiPriority && (
-                      <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
-                        AI Priority: {stop.aiPriority}
-                      </span>
-                    )}
-                    {etas[idx] && (
-                      <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
-                        ETA: {etas[idx]} min
-                      </span>
-                    )}
-                    {stop.windowStart && (
-                      <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded">
-                        Scheduled: {new Date(stop.windowStart).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                      </span>
-                    )}
+      {/* Stop List - Hidden during navigation */}
+      {!isNavigating && (
+        <div className="bg-white border-t shadow-lg max-h-64 overflow-y-auto">
+          <div className="px-4 py-3 border-b bg-gray-50 sticky top-0">
+            <h3 className="font-bold text-gray-800">Delivery Sequence</h3>
+            <p className="text-xs text-gray-500">
+              Optimized by: {ROUTE_MODES.find(m => m.id === mode)?.label} • 
+              Total: {stats?.distance || 0} km, {stats?.duration || 0} min
+            </p>
+          </div>
+          <div className="divide-y">
+            {stops.map((stop, idx) => (
+              <div key={stop.id} className="px-4 py-3 hover:bg-gray-50 transition-colors">
+                <div className="flex items-center gap-3">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-white text-sm ${
+                    (stop.aiPriority || stop.priority) >= 4 ? 'bg-red-600' : (stop.aiPriority || stop.priority) >= 3 ? 'bg-amber-500' : 'bg-blue-500'
+                  }`}>
+                    {idx + 1}
+                  </div>
+                  <div className="flex-1">
+                    <div className="font-semibold text-gray-800">{stop.receiverName}</div>
+                    <div className="text-sm text-gray-600 truncate">{stop.receiverAddress}</div>
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                      {stop.aiPriority && (
+                        <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
+                          AI Priority: {stop.aiPriority}
+                        </span>
+                      )}
+                      {etas[idx] && (
+                        <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
+                          ETA: {etas[idx]} min
+                        </span>
+                      )}
+                      {stop.windowStart && (
+                        <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded">
+                          {new Date(stop.windowStart).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
