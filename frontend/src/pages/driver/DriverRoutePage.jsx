@@ -2291,50 +2291,6 @@ const optimizeRouteByMode = (stops, startPos, roadIssues, mode) => {
 };
 
 /* ===========================
-   CALCULATE ROUTE METRICS
-=========================== */
-const calculateRouteMetrics = (stops, startPos, roadIssues) => {
-  if (!stops.length) return { distance: 0, duration: 0, etas: [] };
-
-  const calculateIssueDelay = (stop) => {
-    let delay = 0;
-    roadIssues.forEach((issue) => {
-      const dist = haversineDistance(stop.lat, stop.lng, issue.latitude, issue.longitude);
-      if (dist < 2) {
-        delay += issue.severity === "Critical" ? 15 : issue.severity === "High" ? 10 : 5;
-      }
-    });
-    return delay;
-  };
-
-  let totalDistance = 0;
-  let totalTime = 0;
-  const etas = [];
-  let current = startPos;
-
-  stops.forEach((stop) => {
-    const segmentDist = haversineDistance(current.lat, current.lng, stop.lat, stop.lng);
-    totalDistance += segmentDist;
-    
-    // Calculate time: avg speed 40 km/h + issue delays + 5 min per stop
-    const baseTime = (segmentDist / 40) * 60; // minutes
-    const issueDelay = calculateIssueDelay(stop);
-    const stopTime = 5; // 5 minutes per stop
-    
-    totalTime += baseTime + issueDelay + stopTime;
-    etas.push(Math.round(totalTime));
-    
-    current = stop;
-  });
-
-  return {
-    distance: totalDistance,
-    duration: Math.round(totalTime),
-    etas
-  };
-};
-
-/* ===========================
    ICONS
 =========================== */
 const stopIcon = (num, priority) => {
@@ -2425,57 +2381,116 @@ function MapBoundsFitter({ coords, stops, driverPos, isNavigating }) {
    ROUTE API
 =========================== */
 async function fetchRouteWithSteps(stops, issues, mode, signal, driverPos) {
-  const allStops = driverPos ? [
-    { lat: driverPos.lat, lng: driverPos.lng, priority: 0 },
-    ...stops
-  ] : stops;
+  if (!stops.length) return { coords: [], duration: 0, distance: 0, instructions: [] };
 
-  const payload = {
-    stops: allStops.map((s) => ({
-      lat: s.lat,
-      lng: s.lng,
-      priority: s.aiPriority || s.priority || 0,
-      windowStart: s.windowStart,
-      windowEnd: null,
-    })),
-    roadIssues: issues,
-    driverLocation: driverPos,
-    optimizationMode: mode,
-  };
+  // Build coordinates string for OSRM API
+  const allPoints = driverPos 
+    ? [[driverPos.lng, driverPos.lat], ...stops.map(s => [s.lng, s.lat])]
+    : stops.map(s => [s.lng, s.lat]);
+  
+  const coordinates = allPoints.map(p => `${p[0]},${p[1]}`).join(';');
+  
+  // Different routing profiles based on mode
+  let osrmProfile = 'driving';
+  let params = 'overview=full&geometries=geojson&steps=true&annotations=true';
+  
+  // Modify routing behavior based on mode
+  if (mode === 'AvoidIssues') {
+    // For avoiding issues, we'll calculate routes that avoid problem areas
+    params += '&continue_straight=false&alternatives=true';
+  } else if (mode === 'AIOptimized') {
+    // Shortest distance - use a tighter overview
+    params += '&continue_straight=true';
+  } else if (mode === 'TimeWindow') {
+    // Fastest route
+    params += '&continue_straight=false';
+  }
+  
+  try {
+    const res = await fetch(
+      `https://router.project-osrm.org/route/v1/${osrmProfile}/${coordinates}?${params}`,
+      { signal }
+    );
 
-  const res = await fetch(`${API_BASE}/route/optimize`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    signal,
-  });
+    const data = await res.json();
+    
+    if (!data.routes || data.routes.length === 0) {
+      throw new Error('No route found');
+    }
+    
+    // If avoiding issues, pick alternative route if available
+    let route = data.routes[0];
+    if (mode === 'AvoidIssues' && data.routes.length > 1) {
+      // Calculate which route avoids more issues
+      let bestRouteIdx = 0;
+      let lowestRisk = Infinity;
+      
+      data.routes.forEach((r, idx) => {
+        const coords = r.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+        let routeRisk = 0;
+        
+        // Sample points along route to check issue proximity
+        const samplePoints = coords.filter((_, i) => i % Math.max(1, Math.floor(coords.length / 20)) === 0);
+        
+        samplePoints.forEach(([lat, lng]) => {
+          issues.forEach(issue => {
+            const dist = haversineDistance(lat, lng, issue.latitude, issue.longitude);
+            if (dist < 3) {
+              routeRisk += issue.severity === "Critical" ? 10 : issue.severity === "High" ? 5 : 2;
+            }
+          });
+        });
+        
+        if (routeRisk < lowestRisk) {
+          lowestRisk = routeRisk;
+          bestRouteIdx = idx;
+        }
+      });
+      
+      route = data.routes[bestRouteIdx];
+    }
 
-  const data = await res.json();
-  const route = data.routes[0];
-
-  const instructions = [];
-  route.legs.forEach((leg, legIdx) => {
-    leg.steps.forEach((step, stepIdx) => {
-      const [lng, lat] = step.maneuver.location;
-      instructions.push({
-        id: `${legIdx}-${stepIdx}`,
-        instruction: step.maneuver.instruction || step.name || "Continue",
-        type: step.maneuver.type,
-        modifier: step.maneuver.modifier,
-        distance: step.distance,
-        duration: step.duration,
-        location: [lat, lng],
-        roadName: step.name,
+    const instructions = [];
+    route.legs.forEach((leg, legIdx) => {
+      leg.steps.forEach((step, stepIdx) => {
+        const [lng, lat] = step.maneuver.location;
+        instructions.push({
+          id: `${legIdx}-${stepIdx}`,
+          instruction: step.maneuver.instruction || step.name || "Continue",
+          type: step.maneuver.type,
+          modifier: step.maneuver.modifier,
+          distance: step.distance,
+          duration: step.duration,
+          location: [lat, lng],
+          roadName: step.name,
+        });
       });
     });
-  });
 
-  return {
-    coords: route.geometry.coordinates.map(([lng, lat]) => [lat, lng]),
-    duration: route.duration,
-    distance: route.distance,
-    instructions,
-  };
+    return {
+      coords: route.geometry.coordinates.map(([lng, lat]) => [lat, lng]),
+      duration: route.duration,
+      distance: route.distance / 1000, // Convert to km
+      instructions,
+    };
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
+    console.error('OSRM routing failed:', err);
+    
+    // Fallback: create straight lines between points
+    const coords = allPoints.map(([lng, lat]) => [lat, lng]);
+    let totalDist = 0;
+    for (let i = 0; i < coords.length - 1; i++) {
+      totalDist += haversineDistance(coords[i][0], coords[i][1], coords[i+1][0], coords[i+1][1]);
+    }
+    
+    return {
+      coords,
+      duration: (totalDist / 40) * 60, // 40 km/h average
+      distance: totalDist,
+      instructions: [],
+    };
+  }
 }
 
 /* ===========================
@@ -2605,16 +2620,24 @@ export default function DriverRoutePage() {
         setNextInstruction(result.instructions[1] || null);
       }
 
-      // Calculate actual metrics based on optimized route
-      const metrics = calculateRouteMetrics(orderedStops, driverLocation, roadIssues);
-
+      // Use the actual route data from the API for display
       setStats({
-        distance: metrics.distance.toFixed(1),
-        duration: metrics.duration,
+        distance: result.distance.toFixed(1),
+        duration: Math.round(result.duration / 60),
         stops: orderedStops.length,
       });
 
-      setEtas(metrics.etas);
+      // Calculate ETAs based on the actual route
+      const etaList = [];
+      let cumulativeTime = 0;
+      const segmentDuration = result.duration / orderedStops.length;
+      
+      for (let i = 0; i < orderedStops.length; i++) {
+        cumulativeTime += segmentDuration + 5; // Add 5 min per stop
+        etaList.push(Math.round(cumulativeTime / 60));
+      }
+      
+      setEtas(etaList);
 
     } catch (err) {
       if (err.name !== "AbortError") {
@@ -2711,7 +2734,17 @@ export default function DriverRoutePage() {
         <div className="flex items-center gap-3">
           <div className="text-2xl">🗺️</div>
           <div>
-            <h1 className="text-lg font-bold text-gray-800">Driver Navigation</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-lg font-bold text-gray-800">Driver Navigation</h1>
+              {!routing && (
+                <div 
+                  className="px-2 py-1 rounded text-xs font-semibold text-white"
+                  style={{ backgroundColor: currentModeColor }}
+                >
+                  {ROUTE_MODES.find(m => m.id === mode)?.label}
+                </div>
+              )}
+            </div>
             <p className="text-xs text-gray-500">
               {stops.length} stops • {stats?.distance || 0} km • {stats?.duration || 0} min
             </p>
@@ -2774,10 +2807,14 @@ export default function DriverRoutePage() {
       {/* Map Container */}
       <div className="flex-1 relative">
         {routing && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-white px-4 py-2 rounded-lg shadow-lg">
-            <div className="flex items-center gap-2">
-              <div className="animate-spin text-blue-500">⚙️</div>
-              <span className="text-sm font-medium">Calculating route...</span>
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-white px-6 py-3 rounded-lg shadow-xl border-l-4"
+               style={{ borderLeftColor: currentModeColor }}>
+            <div className="flex items-center gap-3">
+              <div className="animate-spin text-2xl">⚙️</div>
+              <div>
+                <div className="font-bold text-gray-800">Calculating {ROUTE_MODES.find(m => m.id === mode)?.label} Route</div>
+                <div className="text-xs text-gray-600">{ROUTE_MODES.find(m => m.id === mode)?.desc}</div>
+              </div>
             </div>
           </div>
         )}
@@ -2865,12 +2902,22 @@ export default function DriverRoutePage() {
 
           {/* Route Line with unique color per mode */}
           {routeCoords.length > 0 && (
-            <Polyline
-              positions={routeCoords}
-              color={currentModeColor}
-              weight={6}
-              opacity={0.8}
-            />
+            <>
+              {/* Outer glow effect */}
+              <Polyline
+                positions={routeCoords}
+                color={currentModeColor}
+                weight={12}
+                opacity={0.3}
+              />
+              {/* Main route line */}
+              <Polyline
+                positions={routeCoords}
+                color={currentModeColor}
+                weight={6}
+                opacity={0.9}
+              />
+            </>
           )}
 
           {/* Road Issues */}
@@ -2902,10 +2949,18 @@ export default function DriverRoutePage() {
         <div className="bg-white border-t shadow-lg max-h-64 overflow-y-auto">
           <div className="px-4 py-3 border-b bg-gray-50 sticky top-0">
             <h3 className="font-bold text-gray-800">Delivery Sequence</h3>
-            <p className="text-xs text-gray-500">
-              Optimized by: {ROUTE_MODES.find(m => m.id === mode)?.label} • 
-              Total: {stats?.distance || 0} km, {stats?.duration || 0} min
-            </p>
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
+              <span className="text-xs text-gray-600">Optimized by:</span>
+              <span 
+                className="text-xs font-semibold text-white px-2 py-1 rounded"
+                style={{ backgroundColor: currentModeColor }}
+              >
+                {ROUTE_MODES.find(m => m.id === mode)?.label}
+              </span>
+              <span className="text-xs text-gray-500">
+                • Total: {stats?.distance || 0} km, {stats?.duration || 0} min
+              </span>
+            </div>
           </div>
           <div className="divide-y">
             {stops.map((stop, idx) => (
