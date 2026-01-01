@@ -1,0 +1,173 @@
+{
+  "name": "PAN Photo Signature Verification (Stable)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "verify-kyc",
+        "options": {
+          "binaryData": true
+        }
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const files = $binary;\n\nif (!files?.pan || !files?.photo || !files?.signature) {\n  throw new Error('Required files: pan, photo, signature');\n}\n\nconst allowed = ['image/jpeg','image/png','image/jpg'];\nfor (const [k,v] of Object.entries(files)) {\n  if (!allowed.includes(v.mimeType)) {\n    throw new Error(`Invalid file type for ${k}`);\n  }\n}\n\nconst sessionId = Date.now() + '_' + Math.random().toString(36).slice(2);\n\nreturn [{ json: { sessionId }, binary: files }];"
+      },
+      "name": "Validate Files",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "=/tmp/{{$json.sessionId}}_pan.jpg",
+        "dataPropertyName": "pan"
+      },
+      "name": "Save PAN",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "position": [600, 200]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "=/tmp/{{$json.sessionId}}_photo.jpg",
+        "dataPropertyName": "photo"
+      },
+      "name": "Save Photo",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "=/tmp/{{$json.sessionId}}_signature.jpg",
+        "dataPropertyName": "signature"
+      },
+      "name": "Save Signature",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "position": [600, 400]
+    },
+    {
+      "parameters": {
+        "command": "=python3 /scripts/pan_ocr.py /tmp/{{$json.sessionId}}_pan.jpg"
+      },
+      "name": "PAN OCR",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [820, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{ json: { sessionId: $node['Validate Files'].json.sessionId, panOcr: JSON.parse($json.stdout) } }];"
+      },
+      "name": "Parse PAN",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1000, 200]
+    },
+    {
+      "parameters": {
+        "command": "=python3 /scripts/face_match.py /tmp/{{$json.sessionId}}_pan.jpg /tmp/{{$json.sessionId}}_photo.jpg"
+      },
+      "name": "Face Match",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [820, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{ json: { sessionId: $node['Validate Files'].json.sessionId, faceMatch: JSON.parse($json.stdout) } }];"
+      },
+      "name": "Parse Face",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "command": "=python3 /scripts/signature_match.py /tmp/{{$json.sessionId}}_pan.jpg /tmp/{{$json.sessionId}}_signature.jpg"
+      },
+      "name": "Signature Match",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [820, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{ json: { sessionId: $node['Validate Files'].json.sessionId, signatureMatch: JSON.parse($json.stdout) } }];"
+      },
+      "name": "Parse Signature",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1000, 400]
+    },
+    {
+      "parameters": {
+        "mode": "mergeByKey",
+        "propertyName": "sessionId"
+      },
+      "name": "Merge Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const { panOcr, faceMatch, signatureMatch, sessionId } = $json;\n\nif (!panOcr.success || !faceMatch.success || !signatureMatch.success) {\n  return [{ json: { sessionId, status: 'FAILED' } }];\n}\n\nconst FACE_T = 0.75;\nconst SIGN_T = 0.70;\n\nconst facePass = faceMatch.similarity_score >= FACE_T;\nconst signPass = signatureMatch.similarity_score >= SIGN_T;\n\nreturn [{ json: { sessionId, status: facePass && signPass ? 'VERIFIED' : 'REJECTED', faceScore: faceMatch.similarity_score, signatureScore: signatureMatch.similarity_score } }];"
+      },
+      "name": "Rule Engine",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1400, 300]
+    },
+    {
+      "parameters": {
+        "command": "=rm -f /tmp/{{$json.sessionId}}_pan.jpg /tmp/{{$json.sessionId}}_photo.jpg /tmp/{{$json.sessionId}}_signature.jpg"
+      },
+      "name": "Cleanup",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1600, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      },
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1800, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Validate Files", "type": "main", "index": 0 }]] },
+    "Validate Files": { "main": [[
+      { "node": "Save PAN", "type": "main", "index": 0 },
+      { "node": "Save Photo", "type": "main", "index": 0 },
+      { "node": "Save Signature", "type": "main", "index": 0 }
+    ]] },
+    "Save PAN": { "main": [[{ "node": "PAN OCR", "type": "main", "index": 0 }]] },
+    "PAN OCR": { "main": [[{ "node": "Parse PAN", "type": "main", "index": 0 }]] },
+    "Save Photo": { "main": [[{ "node": "Face Match", "type": "main", "index": 0 }]] },
+    "Face Match": { "main": [[{ "node": "Parse Face", "type": "main", "index": 0 }]] },
+    "Save Signature": { "main": [[{ "node": "Signature Match", "type": "main", "index": 0 }]] },
+    "Signature Match": { "main": [[{ "node": "Parse Signature", "type": "main", "index": 0 }]] },
+    "Parse PAN": { "main": [[{ "node": "Merge Results", "type": "main", "index": 0 }]] },
+    "Parse Face": { "main": [[{ "node": "Merge Results", "type": "main", "index": 1 }]] },
+    "Parse Signature": { "main": [[{ "node": "Merge Results", "type": "main", "index": 2 }]] },
+    "Merge Results": { "main": [[{ "node": "Rule Engine", "type": "main", "index": 0 }]] },
+    "Rule Engine": { "main": [[{ "node": "Cleanup", "type": "main", "index": 0 }]] },
+    "Cleanup": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "active": false
+}

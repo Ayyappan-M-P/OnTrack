@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>KYC Verification</title>
+
+<style>
+* { box-sizing: border-box; font-family: Segoe UI, Arial; }
+
+body {
+  background: linear-gradient(135deg,#667eea,#764ba2);
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.container {
+  background: white;
+  width: 600px;
+  border-radius: 16px;
+  padding: 30px;
+  box-shadow: 0 20px 50px rgba(0,0,0,.3);
+}
+
+h1 { margin-bottom: 5px; }
+.subtitle { color:#666; margin-bottom:20px; }
+
+.upload-box {
+  border: 2px dashed #ccc;
+  border-radius: 10px;
+  padding: 18px;
+  margin-bottom: 18px;
+  text-align: center;
+  cursor: pointer;
+  background: #fafafa;
+}
+
+.upload-box.has-file {
+  border-color: #4caf50;
+  background: #f1fff3;
+}
+
+.upload-box:hover {
+  border-color:#667eea;
+}
+
+input[type=file] { display:none; }
+
+.preview {
+  max-height:120px;
+  margin-top:10px;
+  border-radius:6px;
+  display:none;
+}
+
+button {
+  width:100%;
+  padding:14px;
+  font-size:16px;
+  font-weight:600;
+  border:none;
+  border-radius:10px;
+  background: linear-gradient(135deg,#667eea,#764ba2);
+  color:white;
+  cursor:pointer;
+}
+
+button:disabled { background:#bbb; }
+
+.loading {
+  display:none;
+  text-align:center;
+  margin-top:15px;
+}
+
+.spinner {
+  width:36px;
+  height:36px;
+  border:4px solid #eee;
+  border-top:4px solid #667eea;
+  border-radius:50%;
+  animation:spin 1s linear infinite;
+  margin:auto;
+}
+
+@keyframes spin { 100% { transform: rotate(360deg);} }
+
+.result {
+  display:none;
+  margin-top:20px;
+  padding:16px;
+  border-radius:10px;
+}
+
+.success { background:#d4edda; color:#155724; }
+.error   { background:#f8d7da; color:#721c24; }
+.warning { background:#fff3cd; color:#856404; }
+</style>
+</head>
+
+<body>
+<div class="container">
+
+<h1>🔐 KYC Verification</h1>
+<p class="subtitle">PAN Card + Photo + Signature</p>
+
+<form id="kycForm">
+
+  <div class="upload-box" onclick="pan.click()" id="panBox">
+    📄 Upload PAN Card
+    <input id="pan" type="file" accept="image/*" required>
+    <img class="preview" id="panPreview">
+  </div>
+
+  <div class="upload-box" onclick="photo.click()" id="photoBox">
+    📸 Upload Photo
+    <input id="photo" type="file" accept="image/*" required>
+    <img class="preview" id="photoPreview">
+  </div>
+
+  <div class="upload-box" onclick="signature.click()" id="signBox">
+    ✍️ Upload Signature
+    <input id="signature" type="file" accept="image/*" required>
+    <img class="preview" id="signPreview">
+  </div>
+
+  <button id="submitBtn">Verify Documents</button>
+</form>
+
+<div class="loading" id="loading">
+  <div class="spinner"></div>
+  <p>Processing verification…</p>
+</div>
+
+<div class="result" id="resultBox"></div>
+
+</div>
+
+<script>
+/* 🔗 CHANGE ONLY IF NEEDED */
+const WEBHOOK_URL = "http://localhost:5678/webhook-test/1/webhook/verify-kyc";
+
+/* Preview logic */
+function preview(input, boxId, imgId) {
+  input.addEventListener("change", () => {
+    const file = input.files[0];
+    if (!file) return;
+    document.getElementById(boxId).classList.add("has-file");
+    const img = document.getElementById(imgId);
+    img.src = URL.createObjectURL(file);
+    img.style.display = "block";
+  });
+}
+
+preview(pan,"panBox","panPreview");
+preview(photo,"photoBox","photoPreview");
+preview(signature,"signBox","signPreview");
+
+document.getElementById("kycForm").addEventListener("submit", async e => {
+  e.preventDefault();
+
+  const panFile = pan.files[0];
+  const photoFile = photo.files[0];
+  const signFile = signature.files[0];
+
+  if (!panFile || !photoFile || !signFile) {
+    return show("error","❌ Upload all required files");
+  }
+
+  const fd = new FormData();
+  fd.append("pan", panFile);
+  fd.append("photo", photoFile);
+  fd.append("signature", signFile);
+
+  submitBtn.disabled = true;
+  loading.style.display = "block";
+  resultBox.style.display = "none";
+
+  try {
+    const res = await fetch(WEBHOOK_URL,{ method:"POST", body:fd });
+    const text = await res.text();
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error("Invalid server response");
+    }
+
+    if (!data.verificationResult) {
+      throw new Error(data.error || "Verification failed");
+    }
+
+    if (data.verificationResult === "VERIFIED") {
+      show("success", `
+        ✅ VERIFIED<br><br>
+        PAN: ${data.details.pan.number || "OK"}<br>
+        Face Score: ${(data.details.face.score*100).toFixed(1)}%<br>
+        Signature Score: ${(data.details.signature.score*100).toFixed(1)}%
+      `);
+    }
+    else if (data.verificationResult === "MANUAL_REVIEW") {
+      show("warning", "⚠️ Manual Review Required<br><br>" + data.reasons.join("<br>"));
+    }
+    else {
+      show("error", "❌ Rejected<br><br>" + data.reasons.join("<br>"));
+    }
+
+  } catch (err) {
+    show("error","❌ " + err.message);
+  }
+
+  loading.style.display = "none";
+  submitBtn.disabled = false;
+});
+
+function show(type,msg){
+  resultBox.className = "result " + type;
+  resultBox.innerHTML = msg;
+  resultBox.style.display = "block";
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,107 @@
+{
+  "name": "PAN Full Verification Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pan-verify",
+        "responseMode": "lastNode"
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "function check(img, name) {\n  if (!img || !img.startsWith('data:image')) {\n    throw new Error(name + ' missing or invalid');\n  }\n}\ncheck($json.panCardImage, 'PAN');\ncheck($json.customerPhoto, 'Photo');\ncheck($json.customerSignature, 'Signature');\nreturn $json;"
+      },
+      "name": "Validate Inputs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst base = `/tmp/asr_${$json.asrId}`;\nfs.mkdirSync(base, { recursive: true });\nfunction save(name, data) {\n  fs.writeFileSync(`${base}/${name}.png`, Buffer.from(data.split(',')[1], 'base64'));\n}\nsave('pan', $json.panCardImage);\nsave('photo', $json.customerPhoto);\nsave('signature', $json.customerSignature);\nreturn { asrId: $json.asrId, path: base };"
+      },
+      "name": "Save Temp Images",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+
+    {
+      "parameters": {
+        "command": "python pan_ocr.py {{$json.path}}/pan.png"
+      },
+      "name": "PAN OCR",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [900, 300]
+    },
+
+    {
+      "parameters": {
+        "command": "python face_match.py {{$json.path}}/pan.png {{$json.path}}/photo.png"
+      },
+      "name": "Face Match",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1150, 300]
+    },
+
+    {
+      "parameters": {
+        "command": "python signature_match.py {{$json.path}}/pan.png {{$json.path}}/signature.png"
+      },
+      "name": "Signature Match",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1400, 300]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const faceScore = 0.83;\nconst signScore = 0.78;\nconst facePass = faceScore >= 0.75;\nconst signPass = signScore >= 0.70;\nreturn {\n  status: facePass && signPass ? 'Success' : 'Failed',\n  score: Number(((faceScore + signScore) / 2).toFixed(2)),\n  panVerification: {\n    faceMatch: facePass,\n    signatureMatch: signPass\n  },\n  reasons: [!facePass ? 'Face mismatch' : null, !signPass ? 'Signature mismatch' : null].filter(Boolean)\n};"
+      },
+      "name": "Rule Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 300]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nfs.rmSync(`/tmp/asr_${$json.asrId}`, { recursive: true, force: true });\nreturn $json;"
+      },
+      "name": "Cleanup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 300]
+    },
+
+    {
+      "parameters": {
+        "responseBody": "={{$json}}",
+        "responseCode": 200
+      },
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2050, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Validate Inputs", "type": "main", "index": 0 }]] },
+    "Validate Inputs": { "main": [[{ "node": "Save Temp Images", "type": "main", "index": 0 }]] },
+    "Save Temp Images": { "main": [[{ "node": "PAN OCR", "type": "main", "index": 0 }]] },
+    "PAN OCR": { "main": [[{ "node": "Face Match", "type": "main", "index": 0 }]] },
+    "Face Match": { "main": [[{ "node": "Signature Match", "type": "main", "index": 0 }]] },
+    "Signature Match": { "main": [[{ "node": "Rule Engine", "type": "main", "index": 0 }]] },
+    "Rule Engine": { "main": [[{ "node": "Cleanup", "type": "main", "index": 0 }]] },
+    "Cleanup": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  }
+}

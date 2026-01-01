@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PAN Verification Test</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f6f8;
+      padding: 30px;
+    }
+    .card {
+      max-width: 500px;
+      margin: auto;
+      background: #fff;
+      padding: 20px;
+      border-radius: 8px;
+    }
+    input, button {
+      width: 100%;
+      margin: 10px 0;
+      padding: 10px;
+    }
+    button {
+      background: #2563eb;
+      color: white;
+      border: none;
+      cursor: pointer;
+    }
+    pre {
+      background: #111;
+      color: #0f0;
+      padding: 10px;
+      overflow-x: auto;
+    }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h2>PAN Photo & Signature Verification (Test)</h2>
+
+  <label>PAN Card Image</label>
+  <input type="file" id="pan" accept="image/*" />
+
+  <label>Customer Photo</label>
+  <input type="file" id="photo" accept="image/*" />
+
+  <label>Customer Signature</label>
+  <input type="file" id="signature" accept="image/*" />
+
+  <button onclick="submitData()">Send to n8n</button>
+
+  <h3>Response</h3>
+  <pre id="result">Waiting...</pre>
+</div>
+
+<script>
+  function toBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function submitData() {
+    const pan = document.getElementById("pan").files[0];
+    const photo = document.getElementById("photo").files[0];
+    const signature = document.getElementById("signature").files[0];
+
+    if (!pan || !photo || !signature) {
+      alert("Upload all three images");
+      return;
+    }
+
+    const payload = {
+      asrId: 101,
+      panCardImage: await toBase64(pan),
+      customerPhoto: await toBase64(photo),
+      customerSignature: await toBase64(signature)
+    };
+
+    const response = await fetch(
+      "http://localhost:5678/webhook-test/pan-verify",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }
+    );
+
+    const result = await response.json();
+    document.getElementById("result").textContent =
+      JSON.stringify(result, null, 2);
+  }
+</script>
+
+</body>
+</html>
